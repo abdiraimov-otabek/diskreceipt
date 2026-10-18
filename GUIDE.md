@@ -1,5 +1,7 @@
 # How to use diskreceipt
 
+*Also on the web, with the per-tool cleanup guides it links to: [shedi.app/guides/diskreceipt](https://shedi.app/guides/diskreceipt?ref=diskreceipt).*
+
 This guide covers installing diskreceipt, reading your first receipt and getting space back without breaking a project. It assumes nothing beyond a Mac and Terminal.
 
 **Contents**
