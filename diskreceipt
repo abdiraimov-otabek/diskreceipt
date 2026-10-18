@@ -3,12 +3,13 @@
 # Read-only. It measures with du and find, and never deletes anything.
 # https://github.com/abdiraimov-otabek/diskreceipt  ·  MIT License
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 ROOT="$HOME"
 DEPTH=6
 PROJECTS=1
 COLOR=1
-[ -t 1 ] || COLOR=0
+ANIM=1
+[ -t 1 ] || { COLOR=0; ANIM=0; }
 [ -n "$NO_COLOR" ] && COLOR=0
 
 usage() {
@@ -19,7 +20,8 @@ Usage: diskreceipt [options]
 
   --root DIR       where to look for project folders (default: ~)
   --depth N        how deep to look for project folders (default: 6)
-  --no-projects    skip node_modules, target/, .build, Pods and .venv
+  --no-projects    skip node_modules, target/, .build, Pods and .venv (fast)
+  --no-anim        print the receipt at once, no spinner
   --no-color       plain text
   -v, --version    print the version
   -h, --help       this help
@@ -33,6 +35,7 @@ while [ $# -gt 0 ]; do
     --root) ROOT="${2:?--root needs a folder}"; shift ;;
     --depth) DEPTH="${2:?--depth needs a number}"; shift ;;
     --no-projects) PROJECTS=0 ;;
+    --no-anim) ANIM=0 ;;
     --no-color) COLOR=0 ;;
     -v|--version) echo "diskreceipt $VERSION"; exit 0 ;;
     -h|--help) usage; exit 0 ;;
@@ -42,15 +45,56 @@ while [ $# -gt 0 ]; do
 done
 
 if [ "$COLOR" = 1 ]; then
-  B=$'\033[1m'; D=$'\033[2m'; G=$'\033[32m'; Y=$'\033[33m'; R=$'\033[31m'; N=$'\033[0m'
+  B=$'\033[1m'; D=$'\033[2m'; I=$'\033[3m'; V=$'\033[7m'; N=$'\033[0m'
+  G=$'\033[32m'; Y=$'\033[33m'; R=$'\033[31m'; C=$'\033[36m'; M=$'\033[35m'
 else
-  B=; D=; G=; Y=; R=; N=
+  B=; D=; I=; V=; N=; G=; Y=; R=; C=; M=
 fi
 
 W=56
 LIB="$HOME/Library"
 ITEMS=$(mktemp)
-trap 'rm -f "$ITEMS"' EXIT
+STATUS=$(mktemp)
+SPIN=
+FOUND_KB=0
+TILDE="~"
+
+# ---------- spinner (stderr, only on a terminal) ----------
+spinner_start() {
+  [ "$ANIM" = 1 ] || return 0
+  printf '\033[?25l' >&2
+  (
+    f="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"; i=0
+    while :; do
+      printf '\r\033[K %s%s%s %s' "$C" "${f:i%10:1}" "$N" "$(cat "$STATUS" 2>/dev/null)" >&2
+      i=$((i + 1)); sleep 0.08
+    done
+  ) &
+  SPIN=$!
+}
+spinner_stop() {
+  [ -n "$SPIN" ] || return 0
+  kill "$SPIN" 2>/dev/null; wait "$SPIN" 2>/dev/null; SPIN=
+  printf '\r\033[K\033[?25h' >&2
+}
+say() { [ "$ANIM" = 1 ] && printf '%s  %s%s found so far%s' "$1" "$D" "$(human "$FOUND_KB")" "$N" > "$STATUS"; }
+trap 'spinner_stop; rm -f "$ITEMS" "$STATUS"' EXIT
+trap 'exit 130' INT TERM
+
+human() { # KB to a short size
+  awk -v k="$1" 'BEGIN { if (k >= 1048576) printf "%.1f GB", k/1048576; else if (k >= 1024) printf "%.0f MB", k/1024; else printf "%d KB", k }'
+}
+
+scanmsg() {
+  case "$1" in
+    "Xcode DerivedData") echo "Reading Xcode's diary (DerivedData)" ;;
+    "Docker disk image") echo "Asking Docker what's in the box" ;;
+    "Simulator devices") echo "Counting iPhones you never owned" ;;
+    "Homebrew downloads") echo "Checking what Homebrew kept \"just in case\"" ;;
+    "Android emulators") echo "Waking up the Android emulators" ;;
+    *) echo "Weighing $1" ;;
+  esac
+}
 
 # Size in KB of every existing path given (globs already expanded by the caller).
 kb() {
@@ -66,9 +110,14 @@ kb() {
 # add LABEL SAFETY COMMAND PATH...
 add() {
   local label="$1" safety="$2" cmd="$3"; shift 3
+  say "$(scanmsg "$label")…"
   local size; size=$(kb "$@")
-  [ "$size" -ge 1024 ] && printf '%s|%s|%s|%s\n' "$size" "$label" "$safety" "$cmd" >> "$ITEMS"
+  [ "$size" -ge 1024 ] || return 0
+  FOUND_KB=$((FOUND_KB + size))
+  printf '%s|%s|%s|%s\n' "$size" "$label" "$safety" "$cmd" >> "$ITEMS"
 }
+
+spinner_start
 
 # Known caches. Paths, safety and commands match shedi.app/guides/developer-caches-macos
 add "Xcode DerivedData"          SAFE  "Quit Xcode, then move it to the Trash"  "$LIB/Developer/Xcode/DerivedData"
@@ -105,6 +154,7 @@ add "Docker disk image"          CHECK "docker system df, then docker image prun
 
 # Project folders: one line per kind, with a count.
 if [ "$PROJECTS" = 1 ] && [ -d "$ROOT" ]; then
+  say "Digging through ${ROOT/#$HOME/$TILDE} for node_modules, target/, .venv…"
   FOUND=$(find "$ROOT" -maxdepth "$DEPTH" \
       \( -name Library -o -name .Trash -o -name .git -o -name .cache -o -name .npm -o -name .cargo \) -prune -o \
       -type d \( -name node_modules -o -name target -o -name .build -o -name Pods -o -name .venv \) -print -prune 2>/dev/null)
@@ -113,8 +163,10 @@ if [ "$PROJECTS" = 1 ] && [ -d "$ROOT" ]; then
     while IFS= read -r d; do
       [ "$(basename "$d")" = "$name" ] || continue
       [ -z "$marker" ] || [ -e "$(dirname "$d")/$marker" ] || continue
+      n=$((n + 1))
+      say "Weighing $label #$n ${D}(${d/#$HOME/$TILDE})${N}"
       s=$(du -sk "$d" 2>/dev/null | cut -f1)
-      total=$((total + ${s:-0})); n=$((n + 1))
+      total=$((total + ${s:-0})); FOUND_KB=$((FOUND_KB + ${s:-0}))
     done <<< "$FOUND"
     [ "$total" -ge 1024 ] && printf '%s|%s|%s|%s\n' "$total" "$label ×$n" "$safety" "$cmd" >> "$ITEMS"
   }
@@ -125,48 +177,89 @@ if [ "$PROJECTS" = 1 ] && [ -d "$ROOT" ]; then
   project .venv        ""            "Python .venv"         CHECK "Your install command brings it back"
 fi
 
-human() { # KB to a short size
-  awk -v k="$1" 'BEGIN { if (k >= 1048576) printf "%.1f GB", k/1048576; else if (k >= 1024) printf "%.0f MB", k/1024; else printf "%d KB", k }'
-}
-line() { printf '%*s\n' "$W" '' | tr ' ' "${1:--}"; }
-center() { local s="$1"; printf '%*s%s\n' $(( (W - ${#s}) / 2 )) '' "$s"; }
-row() { # row LEFT RIGHT
-  local l="$1" r="$2" pad=$((W - ${#1} - ${#2}))
-  [ $pad -lt 1 ] && pad=1
-  printf '%s%*s%s\n' "$l" "$pad" '' "$r"
-}
+say "Warming up the printer…"
+sort -t'|' -k1,1nr "$ITEMS" -o "$ITEMS"
+spinner_stop
 
-TOTAL=0; SAFE_KB=0
-echo
-printf '%s' "$B"; center "D I S K   R E C E I P T"; printf '%s' "$N"
-center "developer caches on $(scutil --get ComputerName 2>/dev/null || hostname -s)"
-center "$(date '+%b %d, %Y  %H:%M')"
-line
+# ---------- printing ----------
+out() { printf '%s\n' "$1"; [ "$ANIM" = 1 ] && sleep 0.03; return 0; }
+rep() { local s="" i=0; while [ $i -lt "$2" ]; do s="$s$1"; i=$((i + 1)); done; printf '%s' "$s"; }
+pad() { local s="$1"; [ ${#s} -gt "$2" ] && s="${s:0:$(($2 - 1))}…"; printf '%s%s' "$s" "$(rep ' ' $(($2 - ${#s})))"; }
+center() { printf '%s%s' "$(rep ' ' $(( (W - ${#1}) / 2 )))" "$1"; }
+row() { local pad=$((W - ${#1} - ${#2})); [ $pad -lt 1 ] && pad=1; printf '%s%s%s' "$1" "$(rep ' ' $pad)" "$2"; }
+line() { rep "${1:--}" "$W"; }
+
+TOTAL=0; SAFE_KB=0; MAX=1; TOP=
+read -r first < "$ITEMS" && { MAX=${first%%|*}; TOP=$(echo "$first" | cut -d'|' -f2); }
+
+out ""
+out "${D}$(rep '▁' $W)${N}"
+out "${V}${B}$(center "D I S K   R E C E I P T")$(rep ' ' $((W - (W - 23) / 2 - 23)))${N}"
+out "$(center "developer caches on $(scutil --get ComputerName 2>/dev/null || hostname -s)")"
+out "${D}$(center "$(date '+%b %d, %Y  %H:%M')  ·  cashier: du  ·  register: find")${N}"
+out "$(line)"
 if [ ! -s "$ITEMS" ]; then
-  center "Nothing found. Clean Mac, or a fresh one."
+  out "$(center "Nothing found. Clean Mac, or a fresh one.")"
 else
   while IFS='|' read -r size label safety cmd; do
     case "$safety" in
-      SAFE) tag="${G}safe${N}"; SAFE_KB=$((SAFE_KB + size)) ;;
-      CHECK) tag="${Y}check${N}" ;;
-      KEEP) tag="${R}keep${N}" ;;
+      SAFE) col=$G; tag="safe "; SAFE_KB=$((SAFE_KB + size)) ;;
+      CHECK) col=$Y; tag="check" ;;
+      KEEP) col=$R; tag="keep " ;;
     esac
     TOTAL=$((TOTAL + size))
-    row "$label" "$(human "$size")"
-    printf '  %s %s· %s%s\n' "$tag" "$D" "$cmd" "$N"
-  done < <(sort -t'|' -k1,1nr "$ITEMS")
+    len=$(( size * 14 / MAX )); [ $len -lt 1 ] && len=1
+    bar="${col}$(rep '█' $len)${D}$(rep '░' $((14 - len)))${N}"
+    sz=$(human "$size")
+    out "${B}$(pad "$label" 26)${N}${bar}$(rep ' ' $((16 - ${#sz})))${B}${sz}${N}"
+    out "  ${col}${tag}${N} ${D}· ${cmd}${N}"
+  done < "$ITEMS"
 fi
-line =
-printf '%s' "$B"; row "TOTAL" "$(human "$TOTAL")"; printf '%s' "$N"
-row "  of which safe to clean" "$(human "$SAFE_KB")"
-row "PAID WITH" "YOUR FREE SPACE"
-row "FREE SPACE LEFT" "$(df -k / | awk 'NR==2 { printf "%.1f GB", $4/1048576 }')"
-line
-center "safe = comes back on its own"
-center "check = comes back, but look first"
-center "keep = your files, delete by hand"
-echo
-printf '%s' "$D"
-center "Nothing was deleted. diskreceipt only reads."
-center "Want it explained and cleaned? shedi.app/?ref=diskreceipt"
-printf '%s\n' "$N"
+out "$(line =)"
+out "${B}$(row "TOTAL" "$(human "$TOTAL")")${N}"
+out "${G}$(row "  of which safe to clean" "$(human "$SAFE_KB")")${N}"
+out "$(row "PAID WITH" "YOUR FREE SPACE")"
+out "$(row "FREE SPACE LEFT" "$(df -k / | awk 'NR==2 { printf "%.1f GB", $4/1048576 }')")"
+out "$(line)"
+
+# Quick wins: the three biggest safe items that have a real one-line command.
+WINS=$(awk -F'|' '$3=="SAFE" && $4 ~ /^(npm|uv|go|brew|pip|pod|swift package purge|pnpm|yarn|bun|npx|poetry) / && $4 !~ /,/' "$ITEMS" | head -3)
+if [ -n "$WINS" ]; then
+  wkb=0
+  out "${B}${C}QUICK WINS${N} ${D}(safe, paste into Terminal)${N}"
+  while IFS='|' read -r size label safety cmd; do
+    wkb=$((wkb + size))
+    out "  ${C}\$ ${cmd}${N}$(rep ' ' $((34 - ${#cmd} > 1 ? 34 - ${#cmd} : 1)))${D}# $(human "$size")${N}"
+  done <<< "$WINS"
+  out "  ${D}up to ${N}${B}$(human "$wkb")${N}${D} back, and all of it rebuilds on its own${N}"
+  out "$(line)"
+fi
+
+case "$TOP" in
+  node_modules*) note="node_modules: heaviest object in the known universe." ;;
+  "Python .venv"*) note="A .venv per side project. Very healthy. Very normal." ;;
+  "Xcode DerivedData") note="Xcode remembers everything. Xcode forgives nothing." ;;
+  "Docker disk image") note="Docker is running a whole second computer in there." ;;
+  "Rust target/"*) note="Rust: fearless concurrency, fearless disk usage." ;;
+  "Simulator devices") note="You own a lot of iPhones. None of them are real." ;;
+  *cache*|*packages*|*store*) note="Package managers: professional hoarders since day one." ;;
+  *) note="Your caches have been busy." ;;
+esac
+GB=$((TOTAL / 1048576))
+if   [ $GB -ge 50 ]; then mood="Your Mac called. It wants its disk back."
+elif [ $GB -ge 20 ]; then mood="That's a lot of \"I might need this later\"."
+elif [ $GB -ge 5 ];  then mood="Could be worse. Could be Docker."
+else mood="Suspiciously clean. Do you even build?"
+fi
+out "${M}${I}$(center "Cashier's note:")${N}"
+out "${M}${I}$(center "$note")${N}"
+out "${M}${I}$(center "$mood")${N}"
+out "$(line)"
+out "${D}$(center "safe = comes back on its own")${N}"
+out "${D}$(center "check = comes back, but look first")${N}"
+out "${D}$(center "keep = your files, delete by hand")${N}"
+out ""
+out "$(center "Nothing was deleted. diskreceipt only reads.")"
+out "${D}$(center "Want it explained and cleaned? shedi.app/?ref=diskreceipt")${N}"
+out "${D}$(rep '/\' $((W / 2)))${N}"
+out ""

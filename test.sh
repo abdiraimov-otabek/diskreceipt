@@ -18,13 +18,16 @@ check() { echo "$out" | grep -q -- "$1" || { echo "FAIL: missing '$1'"; fail=1; 
 refute() { echo "$out" | grep -q -- "$1" && { echo "FAIL: unexpected '$1'"; fail=1; }; }
 check "Xcode DerivedData .* 3 MB"
 check "Xcode Archives"
-check "keep · Xcode > Window"
+check "keep *· Xcode > Window"
 check "uv cache .* 2 MB"
 check "node_modules ×1 .* 3 MB"
 check "Rust target/ ×1 .* 4 MB"
 check "TOTAL .* 14 MB"
 check "of which safe to clean .* 9 MB"
 check "Nothing was deleted"
+check "QUICK WINS"
+check "\$ uv cache prune"
+check "Cashier.s note"
 refute "npm cache"
 refute "×2"
 [ -e "$T/code/web/node_modules/react/blob" ] || { echo "FAIL: something was deleted"; fail=1; }

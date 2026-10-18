@@ -47,7 +47,7 @@ diskreceipt --no-projects      # global caches only, fast
 diskreceipt --no-color > receipt.txt
 ```
 
-Scanning your whole home folder takes about 20 seconds. Items under 1 MB are left off.
+Scanning your whole home folder takes about 20 seconds. A spinner shows what it is weighing and the running total, then the receipt prints line by line like a thermal printer, with size bars, a QUICK WINS block of safe commands to paste, and a note from the cashier. Items under 1 MB are left off. Piped output (`diskreceipt > file.txt`) is plain and instant.
 
 ## What the labels mean
 
