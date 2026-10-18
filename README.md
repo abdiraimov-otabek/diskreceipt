@@ -41,6 +41,8 @@ diskreceipt
 
 That's it. It scans your home folder in about 20 seconds and prints the receipt.
 
+📖 **New here? Read the [step-by-step guide](GUIDE.md):** how to read the receipt, what's safe to clean per tool, keeping a history and troubleshooting.
+
 | Option | What it does |
 |---|---|
 | `--root ~/code` | Look for projects only in `~/code` |
