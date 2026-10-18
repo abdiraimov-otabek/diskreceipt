@@ -1,0 +1,172 @@
+#!/bin/bash
+# diskreceipt: print the receipt for the developer caches on your Mac.
+# Read-only. It measures with du and find, and never deletes anything.
+# https://github.com/abdiraimov-otabek/diskreceipt  ·  MIT License
+
+VERSION="1.0.0"
+ROOT="$HOME"
+DEPTH=6
+PROJECTS=1
+COLOR=1
+[ -t 1 ] || COLOR=0
+[ -n "$NO_COLOR" ] && COLOR=0
+
+usage() {
+  cat <<EOF
+diskreceipt $VERSION: the receipt for the developer caches on your Mac.
+
+Usage: diskreceipt [options]
+
+  --root DIR       where to look for project folders (default: ~)
+  --depth N        how deep to look for project folders (default: 6)
+  --no-projects    skip node_modules, target/, .build, Pods and .venv
+  --no-color       plain text
+  -v, --version    print the version
+  -h, --help       this help
+
+Read-only. Every line comes with the official command to clean it.
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --root) ROOT="${2:?--root needs a folder}"; shift ;;
+    --depth) DEPTH="${2:?--depth needs a number}"; shift ;;
+    --no-projects) PROJECTS=0 ;;
+    --no-color) COLOR=0 ;;
+    -v|--version) echo "diskreceipt $VERSION"; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "diskreceipt: unknown option $1" >&2; usage >&2; exit 2 ;;
+  esac
+  shift
+done
+
+if [ "$COLOR" = 1 ]; then
+  B=$'\033[1m'; D=$'\033[2m'; G=$'\033[32m'; Y=$'\033[33m'; R=$'\033[31m'; N=$'\033[0m'
+else
+  B=; D=; G=; Y=; R=; N=
+fi
+
+W=56
+LIB="$HOME/Library"
+ITEMS=$(mktemp)
+trap 'rm -f "$ITEMS"' EXIT
+
+# Size in KB of every existing path given (globs already expanded by the caller).
+kb() {
+  local p total=0 s
+  for p in "$@"; do
+    [ -e "$p" ] || continue
+    s=$(du -sk "$p" 2>/dev/null | cut -f1)
+    total=$((total + ${s:-0}))
+  done
+  echo "$total"
+}
+
+# add LABEL SAFETY COMMAND PATH...
+add() {
+  local label="$1" safety="$2" cmd="$3"; shift 3
+  local size; size=$(kb "$@")
+  [ "$size" -ge 1024 ] && printf '%s|%s|%s|%s\n' "$size" "$label" "$safety" "$cmd" >> "$ITEMS"
+}
+
+# Known caches. Paths, safety and commands match shedi.app/guides/developer-caches-macos
+add "Xcode DerivedData"          SAFE  "Quit Xcode, then move it to the Trash"  "$LIB/Developer/Xcode/DerivedData"
+add "Xcode DeviceSupport"        SAFE  "Move old OS versions to the Trash"      "$LIB/Developer/Xcode/"*DeviceSupport
+add "Xcode Archives"             KEEP  "Xcode > Window > Organizer > Archives"  "$LIB/Developer/Xcode/Archives"
+add "SwiftUI Previews"           SAFE  "Quit Xcode, then move it to the Trash"  "$LIB/Developer/Xcode/UserData/Previews"
+add "Simulator devices"          CHECK "xcrun simctl delete unavailable"        "$LIB/Developer/CoreSimulator/Devices"
+add "CoreSimulator caches"       SAFE  "Quit Simulator, then move it to Trash"  "$LIB/Developer/CoreSimulator/Caches"
+add "SwiftPM cache"              SAFE  "swift package purge-cache"              "$LIB/Caches/org.swift.swiftpm"
+add "CocoaPods cache"            SAFE  "pod cache clean --all"                  "$LIB/Caches/CocoaPods"
+add "Carthage cache"             SAFE  "Move it to the Trash"                   "$LIB/Caches/org.carthage.CarthageKit"
+add "Homebrew downloads"         SAFE  "brew cleanup"                           "$LIB/Caches/Homebrew"
+add "npm cache"                  SAFE  "npm cache clean --force"                "$HOME/.npm/_cacache"
+add "npx packages"               SAFE  "npm cache npx rm"                       "$HOME/.npm/_npx"
+add "pnpm store"                 SAFE  "pnpm store prune"                       "$LIB/pnpm/store"
+add "Yarn cache"                 SAFE  "yarn cache clean"                       "$LIB/Caches/Yarn" "$HOME/.yarn/berry/cache"
+add "Bun cache"                  SAFE  "bun pm cache rm"                        "$HOME/.bun/install/cache"
+add "pip cache"                  SAFE  "pip cache purge"                        "$LIB/Caches/pip"
+add "Poetry cache"               SAFE  "poetry cache clear --all PyPI"          "$LIB/Caches/pypoetry"
+add "uv cache"                   SAFE  "uv cache prune"                         "$HOME/.cache/uv"
+add "Cargo registry and git"     SAFE  "Move it to the Trash"                   "$HOME/.cargo/registry" "$HOME/.cargo/git"
+add "Go build cache"             SAFE  "go clean -cache"                        "$LIB/Caches/go-build"
+add "Go module cache"            SAFE  "go clean -modcache"                     "$HOME/go/pkg/mod"
+add "Gradle caches"              SAFE  "Stop daemons, move it to the Trash"     "$HOME/.gradle/caches" "$HOME/.gradle/wrapper/dists"
+add "Maven repository"           SAFE  "Move ~/.m2/repository to the Trash"     "$HOME/.m2/repository"
+add "Android system images"      CHECK "sdkmanager --uninstall \"<package>\""   "$LIB/Android/sdk/system-images"
+add "Android emulators"          KEEP  "avdmanager delete avd -n <name>"        "$HOME/.android/avd"
+add "JetBrains caches"           SAFE  "File > Invalidate Caches in the IDE"    "$LIB/Caches/JetBrains"
+add "VS Code caches"             SAFE  "Quit VS Code, move them to the Trash"   "$LIB/Application Support/Code/Cache" "$LIB/Application Support/Code/CachedData" "$LIB/Application Support/Code/CachedExtensionVSIXs"
+add "Playwright browsers"        SAFE  "npx playwright uninstall --all"         "$LIB/Caches/ms-playwright"
+add "Puppeteer browsers"         SAFE  "npx @puppeteer/browsers clear"          "$HOME/.cache/puppeteer"
+add "Electron downloads"         SAFE  "Move it to the Trash"                   "$LIB/Caches/electron" "$LIB/Caches/electron-builder"
+add "Docker disk image"          CHECK "docker system df, then docker image prune -a" "$LIB/Containers/com.docker.docker/Data/vms/0/data/Docker.raw"
+
+# Project folders: one line per kind, with a count.
+if [ "$PROJECTS" = 1 ] && [ -d "$ROOT" ]; then
+  FOUND=$(find "$ROOT" -maxdepth "$DEPTH" \
+      \( -name Library -o -name .Trash -o -name .git -o -name .cache -o -name .npm -o -name .cargo \) -prune -o \
+      -type d \( -name node_modules -o -name target -o -name .build -o -name Pods -o -name .venv \) -print -prune 2>/dev/null)
+  project() { # project NAME MARKER LABEL SAFETY COMMAND
+    local name="$1" marker="$2" label="$3" safety="$4" cmd="$5" d total=0 n=0 s
+    while IFS= read -r d; do
+      [ "$(basename "$d")" = "$name" ] || continue
+      [ -z "$marker" ] || [ -e "$(dirname "$d")/$marker" ] || continue
+      s=$(du -sk "$d" 2>/dev/null | cut -f1)
+      total=$((total + ${s:-0})); n=$((n + 1))
+    done <<< "$FOUND"
+    [ "$total" -ge 1024 ] && printf '%s|%s|%s|%s\n' "$total" "$label ×$n" "$safety" "$cmd" >> "$ITEMS"
+  }
+  project node_modules package.json  "node_modules"         CHECK "Your install command brings it back"
+  project target       Cargo.toml    "Rust target/"         SAFE  "cargo clean, in the project"
+  project .build       Package.swift "SwiftPM .build"       SAFE  "swift package clean, in the package"
+  project Pods         Podfile       "CocoaPods Pods/"      CHECK "pod install brings it back"
+  project .venv        ""            "Python .venv"         CHECK "Your install command brings it back"
+fi
+
+human() { # KB to a short size
+  awk -v k="$1" 'BEGIN { if (k >= 1048576) printf "%.1f GB", k/1048576; else if (k >= 1024) printf "%.0f MB", k/1024; else printf "%d KB", k }'
+}
+line() { printf '%*s\n' "$W" '' | tr ' ' "${1:--}"; }
+center() { local s="$1"; printf '%*s%s\n' $(( (W - ${#s}) / 2 )) '' "$s"; }
+row() { # row LEFT RIGHT
+  local l="$1" r="$2" pad=$((W - ${#1} - ${#2}))
+  [ $pad -lt 1 ] && pad=1
+  printf '%s%*s%s\n' "$l" "$pad" '' "$r"
+}
+
+TOTAL=0; SAFE_KB=0
+echo
+printf '%s' "$B"; center "D I S K   R E C E I P T"; printf '%s' "$N"
+center "developer caches on $(scutil --get ComputerName 2>/dev/null || hostname -s)"
+center "$(date '+%b %d, %Y  %H:%M')"
+line
+if [ ! -s "$ITEMS" ]; then
+  center "Nothing found. Clean Mac, or a fresh one."
+else
+  while IFS='|' read -r size label safety cmd; do
+    case "$safety" in
+      SAFE) tag="${G}safe${N}"; SAFE_KB=$((SAFE_KB + size)) ;;
+      CHECK) tag="${Y}check${N}" ;;
+      KEEP) tag="${R}keep${N}" ;;
+    esac
+    TOTAL=$((TOTAL + size))
+    row "$label" "$(human "$size")"
+    printf '  %s %s· %s%s\n' "$tag" "$D" "$cmd" "$N"
+  done < <(sort -t'|' -k1,1nr "$ITEMS")
+fi
+line =
+printf '%s' "$B"; row "TOTAL" "$(human "$TOTAL")"; printf '%s' "$N"
+row "  of which safe to clean" "$(human "$SAFE_KB")"
+row "PAID WITH" "YOUR FREE SPACE"
+row "FREE SPACE LEFT" "$(df -k / | awk 'NR==2 { printf "%.1f GB", $4/1048576 }')"
+line
+center "safe = comes back on its own"
+center "check = comes back, but look first"
+center "keep = your files, delete by hand"
+echo
+printf '%s' "$D"
+center "Nothing was deleted. diskreceipt only reads."
+center "Want it explained and cleaned? shedi.app/?ref=diskreceipt"
+printf '%s\n' "$N"
